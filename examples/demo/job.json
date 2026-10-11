@@ -1,0 +1,40 @@
+{
+  "slug": "library-hours",
+  "date": "2026-10-08",
+  "hook": {"title": "Open until *midnight*", "until": "sentence"},
+  "beats": [
+    {"id": "b1",
+     "text": "The city library now stays open until *midnight*. The change starts *Monday*.",
+     "source": {"name": "City Gazette", "date": "2026-10-07", "url": "https://example.com/library-hours"},
+     "visual": {"want": "Library exterior at night", "assets": ["v01", "v02"], "cues": {"v02": "Monday"}},
+     "overlay": null},
+    {"id": "b2",
+     "text": "Visits rose *40%|forty_percent* last year, to about one hundred sixty-eight thousand.",
+     "source": {"name": "Library annual report", "date": "2026-09-30", "url": "https://example.com/annual-report"},
+     "visual": {"want": "Busy reading room", "assets": ["v03"]},
+     "overlay": {"type": "stat", "title": "Yearly visits", "unit": "k",
+                 "items": [{"label": "2025", "value": 120}, {"label": "2026", "value": 168, "highlight": true}],
+                 "until": "about"}},
+    {"id": "b3",
+     "text": "The director said: “We want the building used, not admired.”",
+     "source": {"name": "City Gazette", "date": "2026-10-07", "url": "https://example.com/library-hours"},
+     "visual": {"want": "Director at a press event", "assets": ["v04"]},
+     "overlay": {"type": "quote", "quote": "We want the building used, not admired.", "name": "Library director",
+                 "highlight": "used",
+                 "sourceText": "Speaking on Tuesday, the director said: \"We want the building used, not admired.\" Staffing for the late shift is funded until next year."}},
+    {"id": "b4",
+     "text": "Late shifts are funded until *next year*. <short pause> What do you think?",
+     "source": {"name": "City Gazette", "date": "2026-10-07", "url": "https://example.com/library-hours"},
+     "visual": {"want": "Empty reading room at night", "assets": ["v01", "v03"]},
+     "overlay": null}
+  ],
+  "meta": {
+    "youtube": {"title": "The city library now stays open until midnight #Shorts",
+                "description": "Longer opening hours start Monday. Would you use the library late at night?",
+                "tags": ["library", "city", "opening hours", "local news"]},
+    "instagram": {"caption": "The city library now stays open until midnight. Would you go?",
+                  "hashtags": ["#library", "#citynews", "#reading"]},
+    "tiktok": {"caption": "Library open until midnight, starting Monday. Would you go?",
+               "hashtags": ["#library", "#citynews"]}
+  }
+}

@@ -1,0 +1,7 @@
+numpy>=1.26
+Pillow>=10.0
+faster-whisper>=1.0
+google-genai>=1.50
+yt-dlp>=2025.1.1
+scipy>=1.11        # optional: faster sfx synthesis
+num2words>=0.5.13  # optional: number spelling for alignment (digits are kept without it)

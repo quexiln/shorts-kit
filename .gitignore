@@ -1,0 +1,11 @@
+jobs/
+channel.json
+.env
+node_modules/
+remotion/out/
+remotion/public/demo/
+__pycache__/
+*.pyc
+build/
+publish_log.md
+.claude/settings.local.json

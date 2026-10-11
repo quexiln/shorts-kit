@@ -1,0 +1,14 @@
+{
+  "name": "My Channel",
+  "handle": "@mychannel",
+  "language": "en",
+  "closingLine": "What do you think?",
+  "tts": {"model": "gemini-3.8-flash-tts", "voice": "Orus", "style": "Calm, confident, conversational narrator",
+          "tempo": 1.0, "fallbackModels": [], "allowFallback": false},
+  "whisper": {"model": "medium"},
+  "theme": {"accent": "#FFD400", "text": "#FFFFFF", "dark": "#111111", "font": "Inter"},
+  "labels": {"illustrative": "ILLUSTRATIVE"},
+  "music": null,
+  "platforms": {"youtube": {"titleMax": 100}, "instagram": {"hashtagsMax": 5}, "tiktok": {"captionMax": 2200}},
+  "bannedPublicPhrases": []
+}
