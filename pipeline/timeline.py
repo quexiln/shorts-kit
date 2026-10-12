@@ -1,7 +1,8 @@
 """job.json + assets/catalog.json + build/words.json -> build/props.json (contract: remotion/src/schema.ts).
 - Shots sit on beat windows; long beats are split into 1.2-2.5 s shots at word boundaries (visual.cues anchor an
   asset to a word). All cuts are on the 30 fps frame grid, contiguous, no gaps; a source a few frames short holds
-  its last frame (<= 0.25 s).
+  its last frame (<= 0.25 s). A still holds up to 4 s (slow zoom) rather than ping-pong with another asset; no
+  footage range is shown twice while fresh material exists; shots under 1 s merge into a neighbour.
 - Source tag per beat with a source, stat/quote cards (captions off meanwhile), hook, outro at the closing line."""
 from __future__ import annotations
 
@@ -17,6 +18,8 @@ CUT_LEAD = 0.08        # beat cut this long before its first word
 WORD_CUT_LEAD = 0.04   # in-beat cut this long before a word
 HOLD_MAX = 0.25        # source short by up to this: last frame is held
 MIN_PIECE = 0.5
+IMG_MAX = 4.0          # a still holds this long at most before another asset is needed
+SHOT_FLOOR = 1.0       # shorter shots merge into a neighbour
 OUTRO_SEC, OUTRO_GAP = 2.5, 0.05
 CARD_MIN, CARD_MAX = 1.5, 4.5
 SOURCE_MIN, SOURCE_MAX, TAG_SPILL, TAG_MIN = 1.6, 3.2, 1.0, 1.4
@@ -100,12 +103,22 @@ def split_window(fa: int, fb: int, wlist, smin=SHOT_MIN, smax=SHOT_MAX, target=S
 # ------------------------------------------------------------------ asset picking
 class AssetPicker:
     """Each beat starts with its first (most relevant) asset, then rotates through the pool. A per-asset cursor
-    advances through video so the same moment is not reused until fresh footage runs out."""
+    advances through video so the same moment is not reused until fresh footage runs out. A still may follow
+    itself (held, up to IMG_MAX); A-B-A-B alternation is refused."""
 
     def __init__(self, catalog: list[dict]):
         self.cat = {c["id"]: c for c in catalog}
         self.cursor: dict[str, float] = {}
-        self.last_id, self.rot = None, 0
+        self.last_id, self.rot, self.held = None, 0, 0.0
+        self.runs: list[str] = []  # asset id of each run of consecutive shots
+
+    def note(self, a, dur: float) -> None:
+        """Record that `a` is on screen for dur seconds."""
+        if a["id"] == self.last_id:
+            self.held += dur
+        else:
+            self.last_id, self.held = a["id"], dur
+            self.runs.append(a["id"])
 
     def pool_for(self, beat: dict, bid: str, prev_pool) -> list[dict]:
         pool = []
@@ -148,21 +161,28 @@ class AssetPicker:
         return max(0.0, cap)
 
     def _ok(self, a, need, fresh) -> bool:
-        if a["id"] == self.last_id and not self.is_video(a):
-            return False  # no identical stills back to back
+        if a["id"] == self.last_id:
+            if not self.is_video(a) and self.held + need > IMG_MAX + 1e-6:
+                return False  # still held long enough
+        elif len(self.runs) >= 3 and a["id"] == self.runs[-2] and self.runs[-1] == self.runs[-3]:
+            return False  # no A-B-A-B ping-pong
         return (self.remaining(a) if fresh else self.capacity(a)) >= need
 
     def pick(self, pool, need, fallback=None) -> dict:
-        """Pool first, then fallback: fresh footage that fills the segment, then a useful fresh piece, then rewound."""
+        """Pool first, then fallback: fresh footage that fills the segment, then a useful fresh piece, then a still
+        held longer, then (out of footage) rewound video."""
         k = self.rot % len(pool)
         order = pool[k:] + pool[:k]
         self.rot += 1
         small, cands = min(need, MIN_PIECE + 0.1), order + list(fallback or [])
-        for fresh, n in ((True, need), (True, small), (False, small)):
+        for n in (need, small):
             for a in cands:
-                if self._ok(a, n, fresh):
+                if self._ok(a, n, True):
                     return a
-        return max(order, key=self.capacity)
+        stills = [a for a in cands if not self.is_video(a)]
+        if stills:
+            return next((a for a in stills if a["id"] == self.last_id), stills[0])
+        return next((a for a in cands if self._ok(a, small, False)), None) or max(order, key=self.capacity)
 
     def consume(self, a, take: float) -> float | None:
         """Source in-point for video (cursor advances); None for images."""
@@ -172,6 +192,7 @@ class AssetPicker:
         cur = self.cursor.get(a["id"], lo)
         if hi is not None and cur + take > hi + 1e-6:
             cur = lo if lo + take <= hi + 1e-6 else max(0.0, hi - take)  # fresh footage used up: start over
+            log.warning(f"'{a['id']}': fresh footage used up, replayed from {cur:.1f} s: add footage")
         self.cursor[a["id"]] = cur + take + 0.1
         return cur
 
@@ -221,7 +242,7 @@ def fill_segment(picker: AssetPicker, pool, fa: int, fb: int, words, fallback=No
         else:
             f2 = fs = fb if take >= rem else min(fb, max(f + 1, f + _f(take)))
         shots.append(make_shot(a, f, fs, picker.consume(a, (fs - f) / FPS), words))
-        picker.last_id = a["id"]
+        picker.note(a, (f2 - f) / FPS)
         f = f2
     return shots
 
@@ -260,6 +281,9 @@ def plan_cued(picker: AssetPicker, pool, fallback, fa: int, fb: int, bw, cues: d
         prev_cap = min(picker.remaining(marks[i - 1][0]), CUE_SHOT_MAX)
         if (starts[i] - starts[i - 1]) / FPS > prev_cap + 1e-6:
             starts[i] = max(marks[i][1], starts[i - 1] + int(prev_cap * FPS))
+    if (fb - starts[-1]) / FPS < SHOT_FLOOR:  # cue near the beat end: start up to CUE_EARLY before the word
+        lo = max(marks[-1][1], fb - _f(SHOT_FLOOR), starts[-2] + _f(SHOT_FLOOR) if len(starts) > 1 else fa)
+        starts[-1] = min(starts[-1], lo)
     shots: list[dict] = []
     if starts[0] > fa:
         b = split_window(fa, starts[0], bw, smin, smax, target)
@@ -277,10 +301,120 @@ def plan_cued(picker: AssetPicker, pool, fallback, fa: int, fb: int, bw, cues: d
         fm = fs = f1 if take >= L - 1e-6 else f0 + max(1, int(take * FPS))
         if fm < f1 and L - take <= HOLD_MAX and picker.is_video(a):
             fm = f1
-        shots.append(make_shot(a, f0, fs, picker.consume(a, (fs - f0) / FPS), bw))
-        picker.last_id = a["id"]
+        take = (fs - f0) / FPS
+        if f1 == fb and take < SHOT_FLOOR <= picker.remaining(a):  # keep footage for tidy_shots to extend it
+            take = SHOT_FLOOR
+        shots.append(dict(make_shot(a, f0, fs, picker.consume(a, take), bw), _cue=True))
+        picker.note(a, (fm - f0) / FPS)
         if fm < f1:
             shots += fill_segment(picker, free or pool, fm, f1, bw, fallback)
+    return shots
+
+
+# ------------------------------------------------------------------ shot clean-up
+def _room(shots, k, a, skip, after=True) -> float:
+    """Unused source seconds after (or before) shot k's footage; a still has unlimited room."""
+    s = shots[k]
+    if s["kind"] != "video":
+        return math.inf
+    lo, hi = AssetPicker.rng(a)
+    hi = math.inf if hi is None else hi
+    s0, s1 = s["from"], s["from"] + s["dur"]
+    for j, o in enumerate(shots):
+        if j == k or j in skip or o["src"] != s["src"]:
+            continue
+        o0, o1 = o["from"], o["from"] + o["dur"]
+        if o0 >= s1 - 1e-6:
+            hi = min(hi, o0)
+        elif o1 <= s0 + 1e-6:
+            lo = max(lo, o1)
+        else:
+            return 0.0  # already overlapping (replayed footage)
+    return max(0.0, hi - s1 if after else s0 - lo)
+
+
+def _grow(shots, k, end_f: int, a, skip) -> bool:
+    """Shot k runs until frame end_f (its footage, then a hold of <= HOLD_MAX). False if the source lacks it."""
+    s = shots[k]
+    want = end_f - _f(s["at"])
+    have = int((s["dur"] + _room(shots, k, a, skip)) * FPS + 1e-6) if s["kind"] == "video" else want
+    if want - have > round(HOLD_MAX * FPS):
+        return False
+    s["dur"] = _s(min(want, have))
+    return True
+
+
+def tidy_shots(shots: list[dict], cat: dict, N: int) -> list[dict]:
+    """Same still twice in a row -> one held shot; shots under SHOT_FLOOR merge into the previous shot (or pull
+    the next one in) when that source has unused footage; more than two shots in a row from one source within a
+    beat -> two longer shots. A cued shot keeps its start: if short, the next cut moves later."""
+    shots = [dict(s) for s in shots]
+    end = lambda j: _f(shots[j + 1]["at"]) if j + 1 < len(shots) else N  # noqa: E731
+
+    def merge_stills():
+        k = 1
+        while k < len(shots):
+            if shots[k]["kind"] == "image" and shots[k]["src"] == shots[k - 1]["src"]:
+                _grow(shots, k - 1, end(k), None, ())
+                del shots[k]
+            else:
+                k += 1
+
+    merge_stills()
+    k = 0
+    while k < len(shots):
+        if (end(k) - _f(shots[k]["at"])) / FPS >= SHOT_FLOOR - 1e-6 or len(shots) == 1:
+            k += 1
+            continue
+        s, nxt, cued = shots[k], (shots[k + 1] if k + 1 < len(shots) else None), shots[k].get("_cue")
+        if not cued and k and _grow(shots, k - 1, end(k), cat[shots[k - 1]["src"]], {k}):
+            del shots[k]
+            continue
+        if not cued and nxt:  # the next shot starts earlier: earlier footage, else more of it
+            extra, saved = _f(nxt["at"]) - _f(s["at"]), dict(nxt)
+            back = _room(shots, k + 1, cat[nxt["src"]], {k}, after=False) >= extra / FPS - 1e-6
+            nxt["at"] = s["at"]
+            if back:
+                nxt["dur"] = _s(_f(nxt["dur"]) + extra)
+                if nxt["kind"] == "video":
+                    nxt["from"] = _r(nxt["from"] - extra / FPS)
+            if back or _grow(shots, k + 1, end(k + 1), cat[nxt["src"]], {k}):
+                del shots[k]
+                continue
+            nxt.update(saved)
+        c, floor = _f(s["at"]) + round(SHOT_FLOOR * FPS), round(SHOT_FLOOR * FPS)
+        if nxt and end(k + 1) - c >= floor and _grow(shots, k, c, cat[s["src"]], ()):  # later cut, shorter next
+            d = c - _f(nxt["at"])
+            nxt["at"], nxt["dur"] = _s(c), _s(_f(nxt["dur"]) - d)
+            if nxt["kind"] == "video":
+                nxt["from"] = _r(nxt["from"] + d / FPS)
+        elif not cued and k and end(k) - floor - _f(shots[k - 1]["at"]) >= floor:  # earlier cut, shorter previous
+            prev, saved = shots[k - 1], dict(s)
+            c = end(k) - floor
+            s["at"] = _s(c)
+            if _grow(shots, k, end(k), cat[s["src"]], ()):
+                prev["dur"] = _s(min(_f(prev["dur"]), c - _f(prev["at"])))
+            else:
+                s.update(saved)
+        k += 1
+    merge_stills()
+    i = 0
+    while i < len(shots):
+        j = i
+        while j + 1 < len(shots) and shots[j + 1]["src"] == shots[i]["src"] \
+                and shots[j + 1].get("_beat") == shots[i].get("_beat"):
+            j += 1
+        if j - i >= 2 and shots[i]["kind"] == "video" \
+                and all(shots[x + 1]["from"] >= shots[x]["from"] for x in range(i, j)):
+            a, mid = cat[shots[i]["src"]], (_f(shots[i]["at"]) + end(j)) / 2
+            m = min(range(i + 1, j + 1), key=lambda x: abs(_f(shots[x]["at"]) - mid))
+            if _grow(shots, m, end(j), a, set(range(i, j + 1)) - {m}):
+                del shots[m + 1:j + 1]
+                j = m
+                if _grow(shots, i, _f(shots[m]["at"]), a, set(range(i + 1, m))):
+                    del shots[i + 1:m]
+                    j = i + 1
+        i = j + 1
     return shots
 
 
@@ -454,11 +588,14 @@ def build_props(job: Job, words_data: dict | None = None, catalog: list[dict] | 
         fallback = picker.fallback_for(pool, prev_pool)
         picker.rot = 0
         cues = (beat.get("visual") or {}).get("cues") or {}
+        D_b, n0 = (fb - fa) / FPS, len(shots)
+        have = sum(picker.remaining(c) if picker.is_video(c) else IMG_MAX for c in pool)
+        if have < D_b - 0.1:
+            log.warning(f"{bid}: only {len(pool)} asset{'s' * (len(pool) != 1)} for {D_b:.1f} s - add footage")
         cued = plan_cued(picker, pool, fallback, fa, fb, bw, cues, lang, smin, smax, target) if cues else []
         if cued:
             shots += cued
         else:  # short-clip pool: each asset once, proportional to its length (no repeats or slivers)
-            D_b = (fb - fa) / FPS
             fresh = [c for c in pool if picker.is_video(c) and picker.remaining(c) >= smin * 0.75
                      and not c.get("maxDur")]
             caps = None
@@ -468,6 +605,8 @@ def build_props(job: Job, words_data: dict | None = None, catalog: list[dict] | 
             bounds = split_window(fa, fb, bw, smin, smax, target, caps)
             for s0, s1 in zip(bounds, bounds[1:]):
                 shots += fill_segment(picker, pool, s0, s1, bw, fallback)
+        for s in shots[n0:]:
+            s["_beat"] = bid
         prev_pool = pool
 
         ov, src = beat.get("overlay"), beat.get("source")
@@ -527,7 +666,8 @@ def build_props(job: Job, words_data: dict | None = None, catalog: list[dict] | 
         cap_off.append({"from": outro_at, "to": D})
     props["captionsOff"] = merge_ranges([r for r in cap_off if r["to"] > r["from"]])
     props["hook"] = {"title": hook["title"], "until": hook_until}
-    props["shots"] = shots
+    bysrc = {(c.get("_src") or c["file"]).replace("\\", "/"): c for c in cat}
+    props["shots"] = [{k2: v for k2, v in s.items() if k2[0] != "_"} for s in tidy_shots(shots, bysrc, N)]
     props["overlays"] = sorted(overlays, key=lambda o: o["at"])
     props["outro"] = {"at": outro_at, "text": ch.get("closingLine") or ""}
     return props

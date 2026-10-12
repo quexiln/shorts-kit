@@ -3,7 +3,7 @@
                                [--id ID] [--image]
   python pipeline/media.py sheet <job_dir> [--id ID] [--fx F] [--fy F] [--zoom Z] [--from A] [--to B]
   python pipeline/media.py check <job_dir>
-get   downloads only the time range (yt-dlp, <= 1080p) to assets/video/<id>.mp4 (or an image to assets/img/) and
+get   downloads only the time range (yt-dlp <= 1080p; direct .mp4/.mov/.webm URLs via ffmpeg) to assets/video/<id>.mp4 (or an image to assets/img/) and
       upserts assets/catalog.json. S/E: seconds or MM:SS of the source video. Catalog `from`/`to` are FILE times
       (pick them from the sheet); focusX/focusY/zoom are set by hand.
 sheet build/sheets/<id>.png: timestamped frames with the 9:16 crop window (outside dimmed) and a focusX ruler.
@@ -15,6 +15,7 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -23,7 +24,8 @@ from common import Job, PipelineError, beat_id, ffprobe_duration, media_size, sa
 
 SECTION_MAX = 120.0
 IMAGE_TYPES = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
-YTDLP_FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba/bv*[height<=1080]+ba/b[height<=1080]"
+YTDLP_FORMAT = "bv*[height<=1080][vcodec^=avc1]+ba/bv*[height<=1080]+ba/b[height<=1080]/b"
+VIDEO_EXT, IMAGE_EXT = (".mp4", ".mov", ".webm", ".m4v"), {".jpg": "jpg", ".jpeg": "jpg", ".png": "png", ".webp": "webp"}
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,40}")
 
 
@@ -61,8 +63,13 @@ def next_id(job: Job, image: bool) -> str:
     return next(f"{p}{i:02d}" for i in range(1, 1000) if f"{p}{i:02d}" not in ids)
 
 
+def _ext(url: str) -> str:
+    return Path(urllib.parse.urlparse(url).path).suffix.lower()
+
+
 def get(job: Job, url: str, start=None, end=None, rights=None, credit=None, illustrative=False, id_=None,
         image=False) -> dict:
+    image = image or _ext(url) in IMAGE_EXT
     id_ = id_ or next_id(job, image)
     if not _ID.fullmatch(id_):
         raise PipelineError(f"bad id '{id_}'")
@@ -72,12 +79,12 @@ def get(job: Job, url: str, start=None, end=None, rights=None, credit=None, illu
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (shorts-kit)"})
         with urllib.request.urlopen(req, timeout=60) as r:  # noqa: S310 (http(s) only, type checked)
             ctype = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if ctype not in IMAGE_TYPES:
+            if ctype not in IMAGE_TYPES and not (_ext(url) in IMAGE_EXT and ctype in ("", "application/octet-stream")):
                 raise PipelineError(f"not an image ({ctype or '?'})")
             data = r.read(30_000_001)
         if len(data) > 30_000_000:
             raise PipelineError("image larger than 30 MB")
-        f = job.a("img", f"{id_}.{IMAGE_TYPES[ctype]}")
+        f = job.a("img", f"{id_}.{IMAGE_TYPES.get(ctype) or IMAGE_EXT[_ext(url)]}")
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(data)
         rec = {"id": id_, "file": f"img/{f.name}", "kind": "image", "srcUrl": url}
@@ -91,13 +98,24 @@ def get(job: Job, url: str, start=None, end=None, rights=None, credit=None, illu
         out.mkdir(parents=True, exist_ok=True)
         for old in out.glob(f"{id_}.*"):
             old.unlink()
-        exe = [shutil.which("yt-dlp")] if shutil.which("yt-dlp") else [sys.executable, "-m", "yt_dlp"]
-        r = subprocess.run(exe + ["--no-playlist", "--no-progress", "-f", YTDLP_FORMAT, "--merge-output-format", "mp4",
-                                  "--download-sections", f"*{a:.2f}-{b:.2f}", "-o", str(out / f"{id_}.%(ext)s"), url],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace")
-        files = [f for f in sorted(out.glob(f"{id_}.*")) if not f.name.endswith((".part", ".ytdl"))]
-        if r.returncode or not files:
-            raise PipelineError(f"yt-dlp failed:\n{(r.stderr or r.stdout)[-1200:]}")
+        if _ext(url) in VIDEO_EXT:  # direct file: yt-dlp reports no height for these, so cut with ffmpeg
+            f = out / f"{id_}.mp4"
+            r = subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{a:.2f}", "-to", f"{b:.2f}", "-i", url,
+                                "-an", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-pix_fmt", "yuv420p",
+                                "-movflags", "+faststart", str(f)], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace")
+            if r.returncode or not f.exists():
+                raise PipelineError(f"ffmpeg failed:\n{r.stderr[-1200:]}")
+            files = [f]
+        else:
+            exe = [shutil.which("yt-dlp")] if shutil.which("yt-dlp") else [sys.executable, "-m", "yt_dlp"]
+            r = subprocess.run(exe + ["--no-playlist", "--no-progress", "-f", YTDLP_FORMAT, "--merge-output-format",
+                                      "mp4", "--download-sections", f"*{a:.2f}-{b:.2f}", "-o",
+                                      str(out / f"{id_}.%(ext)s"), url],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
+            files = [f for f in sorted(out.glob(f"{id_}.*")) if not f.name.endswith((".part", ".ytdl"))]
+            if r.returncode or not files:
+                raise PipelineError(f"yt-dlp failed:\n{(r.stderr or r.stdout)[-1200:]}")
         f = files[0]
         rec = {"id": id_, "file": f"video/{f.name}", "kind": "video", "srcUrl": url, "srcStart": round(a, 2),
                "srcEnd": round(b, 2)}

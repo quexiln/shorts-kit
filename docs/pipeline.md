@@ -17,7 +17,7 @@ python pipeline/make_video.py <job_dir> [--check] [--from STAGE] [--to STAGE] [-
 | timeline | beats to shots, source tags, cards, hook, outro; writes Remotion props | `build/props.json` |
 | render | Remotion render (`build/render.mp4`), then two-pass loudnorm to -14 LUFS | `final.mp4` |
 | qa | contact sheet (1 fps, safe-area lines), black frame and edge-line checks | `build/qa_sheet.png`, `build/qa_report.json` |
-| meta | validates platform texts, collects sources and credits | `meta.json`, `sources.md` |
+| meta | validates platform texts, collects sources (every beat per source) and credits | `meta.json`, `sources.md` |
 | cleanup | copies small files to `keep/`, deletes `assets/` and `build/` | `keep/` |
 
 Always give `--to`. Typical runs: `--to meta`, then `--from cleanup --to cleanup`.
@@ -57,7 +57,7 @@ errors are corrected automatically.
 
 ## QA and review
 `qa` writes `build/qa_sheet.png` (one frame per second with safe-area lines) and `build/qa_report.json`
-(black frames, hard edge lines near the crop border). There is no automatic vision model: look at the sheet
+(black frames, letterbox bars, hard edge lines near the crop border). A flat black band with a straight edge is reported as "black bar"; one with an uneven edge (dark footage on black) as "dark band ... letterbox or dark footage?", so look at the frame. A finding on a single sampled frame is re-checked at full resolution +-0.2 s and dropped if the neighbours are clean (transition frame). There is no automatic vision model: look at the sheet
 yourself. For each finding decide whether it is real. False alarm:
 
 ```
@@ -70,7 +70,7 @@ Cleanup refuses to run while findings are unreviewed (exit 3).
 
 ## Other tools
 - `python pipeline/media.py get <url> --job <job_dir> --start S --end E --rights R --credit C [--illustrative]
-  [--id ID] [--image]`: download a time range (yt-dlp, <= 1080p) or an image, and add/update the catalog
+  [--id ID] [--image]`: download a time range (yt-dlp <= 1080p; direct .mp4/.mov/.webm URLs are cut with ffmpeg) or an image (.jpg/.png/.webp URLs are detected), and add/update the catalog
   entry (ids `v01`, `p01`... by default). Then set `from`/`to`, `focusX`/`focusY` by hand.
 - `python pipeline/media.py sheet <job_dir> [--id ID] [--fx F] [--fy F] [--zoom Z] [--from A] [--to B]`:
   `build/sheets/<id>.png`, timestamped frames (file time) with the 9:16 crop window and a focusX ruler.
@@ -90,6 +90,10 @@ Cleanup keeps `job.json`, `final.mp4`, `meta.json`, `sources.md` and small files
 
 ## Timeline rules
 Cuts sit on the 30 fps grid, shots are contiguous, long beats split into 1.2-2.5 s shots at word
-boundaries, a clip a few frames short holds its last frame (<= 0.25 s). The outro starts at the closing line if
+boundaries, a clip a few frames short holds its last frame (<= 0.25 s). A still holds up to 4 s (slow zoom)
+instead of alternating with another asset; no A-B-A-B alternation, at most two shots in a row from one source
+within a beat. Video continues where it left off; a range already shown is replayed only when all footage is used
+up (warning). Shots under 1 s merge into a neighbour. A beat with less footage than time logs
+`b3: only 1 asset for 9.4 s - add footage`. The outro starts at the closing line if
 the narration ends with `closingLine`, else 0.05 s after the last word, and lasts 2.5 s. Source tags appear at
 beat start (after the hook), do not overlap, and last 1.6-3.2 s. Card and caption rules: `docs/job-format.md`.

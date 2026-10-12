@@ -19,7 +19,7 @@ Shortened:
      "visual": {"want": "Library exterior at night", "assets": ["v01", "v02"], "cues": {"v02": "Monday"}},
      "overlay": null},
     {"id": "b2",
-     "text": "Visits rose *40%|forty_percent* last year, to about one hundred sixty-eight thousand.",
+     "text": "Visits rose *40%|forty_percent* last year, to about *168,000|one_hundred_sixty-eight_thousand*.",
      "source": {"name": "Library annual report", "date": "2026-09-30", "url": "https://example.com/annual-report"},
      "visual": {"want": "Busy reading room", "assets": ["v03"]},
      "overlay": {"type": "stat", "title": "Yearly visits", "unit": "k",
@@ -65,7 +65,8 @@ that word), or seconds. Default: end of the first beat. Always clamped to 1.8-4 
   shots of about 1.2-2.5 s at word boundaries.
 - `visual.cues`: `{assetId: word}`; that asset starts as the word is spoken (may slide into the word if the
   clip is short). Assets without a cue fill the rest.
-- If a beat's own footage runs out, catalog items without `beat` and the previous beat's assets are used.
+- If a beat's own footage runs out, catalog items without `beat` and the previous beat's assets are used
+  (a still is held up to 4 s first; the timeline warns when a beat lacks footage).
 - `overlay`: `null`, a `stat` card or a `quote` card. A stat card starts at the beat start; a quote card starts
   when the quote's first words are spoken (if there is at least 1.2 s before them). Cards last 1.5-4.5 s.
   - `until`: a word of the beat; the card ends just before that word is spoken (default: end of beat).
@@ -73,9 +74,13 @@ that word), or seconds. Default: end of the first beat. Always clamped to 1.8-4 
 ### Captions
 Captions are off while a card is shown, during the hook if its title mostly repeats the first beat, and from
 the outro on when the narration ends with `closingLine` (the outro shows that line instead).
+Captions show groups of 1-3 words; a group always ends after a word ending in `. ! ? …` (closing quotes or
+brackets stay with that word), so two sentences never share a group. Write numbers as one alias unit
+(`168,000|one_hundred_sixty-eight_thousand`) so they appear as one caption.
 
 ### stat overlay
-`{"type":"stat","title","unit"?,"items":[{"label","value","highlight"?}],"until"?}`. 2-5 items, horizontal bars.
+`{"type":"stat","title","unit"?,"items":[{"label","value","highlight"?}],"until"?}`. 2-5 items, horizontal bars
+on a linear scale; a non-zero value always shows a visible bar (3% of the track, at least 8 px).
 
 ### quote overlay
 `{"type":"quote","quote","name","role"?,"highlight"?,"sourceText","until"?}`.

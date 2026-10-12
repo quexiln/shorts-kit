@@ -12,12 +12,13 @@ const MAX_WORDS = 3;
 const MAX_CHARS = 18;
 const MAX_GAP = 0.45; // a pause this long starts a new group (s)
 const LINGER = 0.35; // last group stays this long after its last word (s)
-const SENT_END = /[.!?…,;:]$/;
+// A group ends after punctuation, closing quotes/brackets included (`galaxy.”` ends a sentence).
+const SENT_END = /[.!?…,;:]["”’'»)\]]*$/u;
 const FONT_MAX = 84;
 const CHAR_EM = 0.6; // rough average glyph width of a bold sans, in em
 
-// Shown form: trailing comma/period dropped, ? and ! kept.
-const shown = (t: string) => t.replace(/[.,;:…]+$/u, '');
+// Shown form: trailing comma/period dropped (also before closing quotes), ? and ! kept.
+const shown = (t: string) => t.replace(/[.,;:…]+(["”’'»)\]]*)$/u, '$1');
 
 export const chunkWords = (words: Word[]): Chunk[] => {
   const groups: Word[][] = [];

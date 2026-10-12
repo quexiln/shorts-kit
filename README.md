@@ -25,7 +25,7 @@ Script-to-vertical-video pipeline for 30–60 s explainer shorts: TTS narration,
 ## Quick start
 
 ```
-git clone <repo-url> shorts-kit
+git clone https://github.com/quexiln/shorts-kit.git
 cd shorts-kit
 pip install -r requirements.txt
 cd remotion && npm install && cd ..

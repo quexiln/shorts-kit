@@ -16,9 +16,9 @@ import checks  # noqa: E402
 import cleanup  # noqa: E402
 import make_video  # noqa: E402
 import meta  # noqa: E402
-from common import DEFAULT_CHANNEL, ROOT, Job, PipelineError, expand_spoken, lower, norm, parse_text, script_tokens, \
-    tts_line, upper  # noqa: E402
-from timeline import build_props, split_window, validate_props  # noqa: E402
+from common import DEFAULT_CHANNEL, ROOT, Job, PipelineError, ceil_frames, expand_spoken, lower, norm, parse_text, \
+    script_tokens, tts_line, upper  # noqa: E402
+from timeline import IMG_MAX, SHOT_FLOOR, build_props, split_window, tidy_shots, validate_props  # noqa: E402
 
 DEMO = json.loads((ROOT / "examples" / "demo" / "job.json").read_text(encoding="utf-8"))
 
@@ -178,7 +178,8 @@ class TimelineTests(unittest.TestCase):
         p = build_props(self.t.job, wd, copy.deepcopy(CATALOG))
         monday = next(w for w in wd["words"] if w["text"].startswith("Monday"))
         v02 = [s for s in p["shots"] if s["src"].endswith("v02.mp4")][0]
-        self.assertLessEqual(abs(v02["at"] - monday["start"]), 0.12)
+        self.assertLessEqual(abs(v02["at"] - monday["start"]), 0.12 + 0.4)  # a cue at the beat end may start early
+        self.assertGreaterEqual(v02["dur"], 1.0)
 
     def test_cards_turn_captions_off_and_until(self):
         p = self.props()
@@ -193,6 +194,62 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual((b[0], b[-1]), (0, 180))
         for x, y in zip(b, b[1:]):
             self.assertTrue(30 <= y - x <= 75)
+
+    def assert_no_replay(self, p):
+        seen = {}
+        for s in p["shots"]:
+            if s["kind"] == "video":
+                a, b = s["from"], s["from"] + s["dur"]
+                for x, y in seen.get(s["src"], []):
+                    self.assertTrue(a >= y - 1e-3 or b <= x + 1e-3, f"{s} replays {x}-{y}")
+                seen.setdefault(s["src"], []).append((a, b))
+
+    def test_single_still_holds_without_ping_pong(self):
+        d = copy.deepcopy(DEMO)
+        d["beats"][3]["text"] = ("Late shifts are funded until *next year*, and the city plans to review the late "
+                                 "opening hours again after the winter months are over. What do you think?")
+        d["beats"][3]["visual"]["assets"] = ["p01"]
+        cat = copy.deepcopy(CATALOG) + [{"id": f"p0{i}", "file": f"img/p0{i}.jpg", "kind": "image", "credit": "Demo",
+                                         "rights": "CC0", "srcUrl": "https://example.com",
+                                         **({"beat": "b4"} if i == 1 else {})} for i in (1, 2)]
+        t = TempJob(d)
+        try:
+            with self.assertLogs("shorts", "WARNING") as cm:
+                p = build_props(t.job, fake_words(d), cat)
+        finally:
+            t.close()
+        self.assertTrue(any("b4: only 1 asset for" in m for m in cm.output), cm.output)
+        self.assertEqual(validate_props(p), [])
+        src = [s["src"] for s in p["shots"]]
+        for i in range(len(src) - 3):
+            self.assertFalse(src[i] == src[i + 2] != src[i + 1] == src[i + 3], src)  # no A-B-A-B
+        for a, b in zip(p["shots"], p["shots"][1:]):
+            self.assertFalse(a["kind"] == "image" and a["src"] == b["src"], src)
+        self.assertTrue(all(s["dur"] <= IMG_MAX + SHOT_FLOOR for s in p["shots"] if s["kind"] == "image"))
+        self.assertGreater(max(s["dur"] for s in p["shots"] if s["src"] == "img/p01.jpg"), 3.0)  # held, not flipped
+        self.assert_no_replay(p)
+
+    def test_tight_footage_no_replay_no_tail_sliver(self):
+        cat = copy.deepcopy(CATALOG)
+        for c in cat:
+            c["to"] = 4.5
+        p = build_props(self.t.job, fake_words(self.t.job.data), cat)
+        self.assertEqual(validate_props(p), [])
+        self.assert_no_replay(p)
+        ends = [s["at"] for s in p["shots"][1:]] + [ceil_frames(p["durationSec"]) / 30]
+        spans = [round(e - s["at"], 3) for s, e in zip(p["shots"], ends)]
+        self.assertTrue(all(x >= SHOT_FLOOR for x in spans[-3:]), spans)
+
+    def test_tidy_merges_runs_and_stills(self):
+        cat = {"video/v01.mp4": {"id": "v01", "from": 0, "to": 20}, "img/p01.jpg": {"id": "p01", "kind": "image"}}
+        v = lambda at, dur, frm: {"src": "video/v01.mp4", "kind": "video", "at": at, "dur": dur, "from": frm,  # noqa
+                                  "_beat": "b1"}
+        shots = [v(0, 1.5, 0), v(1.5, 1.5, 1.6), v(3, 1.5, 3.2), v(4.5, 1.5, 4.8),
+                 {"src": "img/p01.jpg", "kind": "image", "at": 6, "dur": 1.5, "_beat": "b2"},
+                 {"src": "img/p01.jpg", "kind": "image", "at": 7.5, "dur": 1.5, "_beat": "b2"}]
+        out = tidy_shots(shots, cat, 270)
+        self.assertEqual([(s["src"], s["at"], s["dur"]) for s in out],
+                         [("video/v01.mp4", 0, 3.0), ("video/v01.mp4", 3.0, 3.0), ("img/p01.jpg", 6, 3.0)])
 
     def test_validate_catches_gap(self):
         p = self.props()

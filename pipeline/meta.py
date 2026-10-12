@@ -71,14 +71,17 @@ def validate_meta(plat: dict, channel: dict) -> tuple[list[str], list[str]]:
 
 
 def collect_sources(job: Job) -> list[dict]:
-    seen, out = set(), []
+    """One entry per distinct source; `beats` lists every beat that uses it (`beat` = the first)."""
+    out: dict[tuple, dict] = {}
     for i, b in enumerate(job.beats):
         s = b.get("source") or {}
-        k = (s.get("name"), s.get("date"), s.get("url"))
-        if s.get("name") and k not in seen:
-            seen.add(k)
-            out.append({"beat": beat_id(b, i), "name": s["name"], "date": s.get("date"), "url": s.get("url")})
-    return out
+        if not s.get("name"):
+            continue
+        e = out.setdefault((s["name"], s.get("date"), s.get("url")),
+                           {"beat": beat_id(b, i), "beats": [], "name": s["name"], "date": s.get("date"),
+                            "url": s.get("url")})
+        e["beats"].append(beat_id(b, i))
+    return list(out.values())
 
 
 def collect_media(job: Job) -> list[dict]:
@@ -120,8 +123,8 @@ def build_meta(job: Job) -> tuple[dict, list[str], list[str]]:
 
 def write_sources_md(job: Job, meta: dict) -> None:
     L = [f"# Sources: {meta['slug']} ({meta['date']})", "", "## Facts"]
-    L += [f"- {s['name']}, {s.get('date') or '?'}: {s.get('url') or 'no url'} ({s['beat']})"
-          for s in meta.get("sources") or []] or ["- none"]
+    L += [f"- {s['name']} ({s.get('date') or '?'}) — {', '.join(s.get('beats') or [s.get('beat') or '?'])}: "
+          f"{s.get('url') or 'no url'}" for s in meta.get("sources") or []] or ["- none"]
     L += ["", "## Footage"]
     L += [f"- {m.get('id')}: {m.get('credit') or '-'} / rights: {m.get('rights') or '?'}"
           f"{' / illustrative' if m.get('illustrative') else ''}: {m.get('srcUrl') or 'no url'}"

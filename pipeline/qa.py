@@ -34,15 +34,29 @@ def _bar_len(lines) -> int:
     return n
 
 
+def _straight(lines: np.ndarray, n: int) -> bool:
+    """True if the dark band ends at the same depth (+-1 row) in >= 90% of the columns: a real letterbox edge."""
+    lit = lines[:n + 3] > 4
+    first = np.where(lit.any(0), lit.argmax(0), n + 3)
+    return bool((np.abs(first - n) <= 1).mean() >= 0.9)
+
+
 def frame_checks(fr: np.ndarray) -> list[str]:
+    """Black frame, letterbox bars (flat black band with a straight edge) and ambiguous dark bands (flat black but the
+    edge is not straight: probably dark footage such as an animation on black space)."""
     lum = fr.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
     h, w = lum.shape
     if lum.mean() < 6 and np.percentile(lum, 99) < 20:
         return ["black frame"]
     rows, cols = max(3, int(32 * h / 1920)), max(3, int(20 * w / 1080))
-    return [f"black bar {name}" for name, lines, lim in (("top", lum, rows), ("bottom", lum[::-1], rows),
-                                                          ("left", lum.T, cols), ("right", lum.T[::-1], cols))
-            if _bar_len(lines) >= lim]
+    out = []
+    for name, lines, lim in (("top", lum, rows), ("bottom", lum[::-1], rows), ("left", lum.T, cols),
+                             ("right", lum.T[::-1], cols)):
+        n = _bar_len(lines)
+        if n >= lim:
+            out.append(f"black bar {name}" if _straight(lines, n)
+                       else f"dark band at {name} — letterbox or dark footage? check the frame")
+    return out
 
 
 def edge_lines(gray: np.ndarray, max_rows: int = 24) -> list[str]:
@@ -81,6 +95,32 @@ def shot_edge_checks(video, props: dict | None, D: float) -> list[str]:
             for p in edge_lines(np.frombuffer(r.stdout, np.uint8, size, i * size).reshape(h, w))]
 
 
+def _grab_at(video, t: float, size: tuple[int, int]) -> np.ndarray | None:
+    w, h = size
+    raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(video), "-frames:v",
+                          "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True).stdout
+    return np.frombuffer(raw, np.uint8, w * h * 3).reshape(h, w, 3) if len(raw) == w * h * 3 else None
+
+
+def drop_transient(video, notes: dict, D: float, step: float = 0.2) -> dict:
+    """A finding on one sampled frame only may be a transition frame: keep it only if a +-0.2 s neighbour, checked at
+    full resolution, shows the same finding."""
+    size = media_size(video) or (1080, 1920)
+    out = {}
+    for i, found in notes.items():
+        single = [f for f in found if f not in notes.get(i - 1, []) and f not in notes.get(i + 1, [])]
+        keep = [f for f in found if f not in single]
+        if single:
+            seen = set()
+            for t in (i - step, i + step):
+                if 0 <= t < D and (fr := _grab_at(video, t, size)) is not None:
+                    seen.update(frame_checks(fr))
+            keep += [f for f in single if f in seen]
+        if keep:
+            out[i] = keep
+    return out
+
+
 def contact_sheet(frames, out, notes: dict) -> None:
     from PIL import Image, ImageDraw
     sheet = Image.new("RGB", (TW * COLS, TH * ((len(frames) + COLS - 1) // COLS)), (17, 17, 17))
@@ -113,12 +153,14 @@ def run_qa(job: Job, force: bool = False) -> dict:
         return load_json(rep_p)
     frames = grab_frames(video)
     notes = {i: n for i, fr in enumerate(frames) if (n := frame_checks(fr))}
+    D = ffprobe_duration(video)
+    notes = drop_transient(video, notes, D)
     contact_sheet(frames, job.b("qa_sheet.png"), notes)
     problems = [f"{i} s: {', '.join(n)}" for i, n in sorted(notes.items())]
     fi = job.b("final_info.json")
     problems += [f"final: {p}" for p in (load_json(fi).get("problems", []) if fi.exists() else [])]
     props = load_json(job.b("props.json")) if job.b("props.json").exists() else None
-    problems += shot_edge_checks(video, props, ffprobe_duration(video))
+    problems += shot_edge_checks(video, props, D)
     rep = {"video_sig": file_sig(video), "frames": len(frames), "sheet": "build/qa_sheet.png",
            "problems": problems, "ok": not problems}
     save_json(rep_p, rep)

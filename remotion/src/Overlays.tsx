@@ -78,7 +78,11 @@ const Panel: React.FC<Look & {children: React.ReactNode}> = ({theme, font, child
   );
 };
 
-const fmt = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
+/** smallest bar for a non-zero value: 3% of the track, at least 8 px */
+const BAR_MIN_PCT = 3;
+const BAR_MIN_PX = 8;
+
+const fmt = (v: number) => (Number.isInteger(v) ? String(v) : Math.abs(v) < 1 ? String(+v.toPrecision(2)) : v.toFixed(1));
 
 export const StatCard: React.FC<Look & {o: OverlayOf<'stat'>}> = ({o, theme, font}) => {
   const frame = useCurrentFrame();
@@ -102,7 +106,8 @@ export const StatCard: React.FC<Look & {o: OverlayOf<'stat'>}> = ({o, theme, fon
                   style={{
                     height: '100%',
                     borderRadius: 9,
-                    width: `${(Math.abs(it.value) / max) * 100 * grow(i)}%`,
+                    // linear scale; a non-zero value never shrinks below a visible stub
+                    width: it.value ? `calc(max(${BAR_MIN_PCT}%, ${BAR_MIN_PX}px, ${(Math.abs(it.value) / max) * 100}%) * ${grow(i)})` : 0,
                     background: it.highlight ? theme.accent : alpha(theme.text, 0.55),
                   }}
                 />
